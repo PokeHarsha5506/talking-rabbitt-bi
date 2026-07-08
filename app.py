@@ -76,7 +76,7 @@ def inject_theme(theme: str):
 # DATABASE LAYER (ACCOUNT & ACCOUNT CHAT PERSISTENCE)
 # ----------------------------------------------------------------------------
 def load_user_db() -> dict:
-    """Loads accounts and historical chats from a local nested JSON database."""
+    """Loads accounts and historical chats, auto-migrating old schemas if found."""
     if not os.path.exists(DB_FILE):
         initial_db = {
             "admin": {
@@ -89,7 +89,21 @@ def load_user_db() -> dict:
         return initial_db
     try:
         with open(DB_FILE, "r") as f:
-            return json.load(f)
+            db = json.load(f)
+        
+        # Auto-migration safety logic
+        migrated = False
+        for username, data in list(db.items()):
+            if isinstance(data, str):
+                db[username] = {
+                    "password": data,
+                    "history": []
+                }
+                migrated = True
+        if migrated:
+            save_user_db(db)
+            
+        return db
     except Exception:
         return {}
 
@@ -105,14 +119,16 @@ def sync_user_chat_to_disk():
     if st.session_state.get("authenticated") and st.session_state.get("username"):
         db = load_user_db()
         username = st.session_state["username"]
-        if username in db:
-            # Drop un-serializable components (like raw plotly fig objects) before saving
+        if username in db and isinstance(db[username], dict):
             serializable_history = []
-            for msg in st.session_state.history:
-                serializable_history.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+            # Verify history exists and is iterable
+            if "history" in st.session_state and isinstance(st.session_state.history, list):
+                for msg in st.session_state.history:
+                    if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                        serializable_history.append({
+                            "role": msg["role"],
+                            "content": msg["content"]
+                        })
             db[username]["history"] = serializable_history
             save_user_db(db)
 
@@ -145,11 +161,10 @@ def check_authentication():
                 if submit_login:
                     if not username or not password:
                         st.error("Fields cannot be blank.")
-                    elif username in user_db and user_db[username]["password"] == hash_string(password):
+                    elif username in user_db and isinstance(user_db[username], dict) and user_db[username].get("password") == hash_string(password):
                         st.session_state["authenticated"] = True
                         st.session_state["username"] = username
                         
-                        # Dynamically restore previous conversation if it exists
                         saved_history = user_db[username].get("history", [])
                         st.session_state["history"] = [{"role": m["role"], "content": m["content"], "fig": None} for m in saved_history]
                         
@@ -176,7 +191,6 @@ def check_authentication():
                     elif new_user in user_db:
                         st.error("Username already exists.")
                     else:
-                        # Setup new account architecture with empty history array
                         user_db[new_user] = {
                             "password": hash_string(new_pass),
                             "history": []
@@ -192,9 +206,8 @@ def check_authentication():
 # ----------------------------------------------------------------------------
 def generate_auto_rag_text(df: pd.DataFrame) -> list:
     text_chunks = []
-    
-    # 1. Process Numeric Profiles
     numeric_cols = df.select_dtypes("number").columns.tolist()
+    
     for col in numeric_cols:
         col_min = df[col].min()
         col_max = df[col].max()
@@ -216,7 +229,6 @@ def generate_auto_rag_text(df: pd.DataFrame) -> list:
                 text_chunks.append(f"The highest value for '{col}' is {df.loc[max_idx, col]}, found in row associated with {id_col} '{df.loc[max_idx, id_col]}'.")
                 text_chunks.append(f"The lowest value for '{col}' is {df.loc[min_idx, col]}, found in row associated with {id_col} '{df.loc[min_idx, id_col]}'.")
 
-    # 2. Process Categorical Distribution Overviews
     cat_cols = [c for c in df.columns if c not in numeric_cols]
     for col in cat_cols:
         value_counts = df[col].value_counts()
@@ -228,7 +240,6 @@ def generate_auto_rag_text(df: pd.DataFrame) -> list:
         summary += f"The most frequent profiles include: {distribution_str}."
         text_chunks.append(summary)
 
-    # 3. Handle Time-series Ranges
     for c in df.columns:
         parsed = pd.to_datetime(df[c], errors="coerce")
         if parsed.notna().mean() > 0.8:
@@ -545,21 +556,29 @@ def chat_history_csv(history: list) -> bytes:
 # ----------------------------------------------------------------------------
 # EXPLICIT RUNTIME ENGINE CONTROL
 # ----------------------------------------------------------------------------
-check_authentication()  
-
 if "history" not in st.session_state:
     st.session_state.history = []
 if "insights_text" not in st.session_state:
     st.session_state.insights_text = None
 
+check_authentication()  
+
 with st.sidebar:
     st.header(f"Welcome, {st.session_state.get('username', 'User')}! 👋")
     if st.button("Log Out"):
-        # Explicit synchronization sweep before cleaning states
+        # 1. Sync the current session history safely before altering state
         sync_user_chat_to_disk()
+        
+        # 2. Complete memory sweep of user specific tracking vectors
         st.session_state["authenticated"] = False
+        st.session_state["username"] = None
         st.session_state["history"] = []
         st.session_state["insights_text"] = None
+        
+        # 3. Soft reset dynamic parameters safely
+        if "suggested_questions" in st.session_state:
+            st.session_state["suggested_questions"] = []
+            
         st.rerun()
         
     st.markdown("---")
@@ -589,8 +608,6 @@ st.caption("Upload raw tables to trigger automated semantic profiling and multi-
 
 if not file:
     st.info("Upload a CSV file from the sidebar to activate the analysis window.")
-    
-    # Render historic conversation stream even when file has not yet been assigned
     if st.session_state.history:
         st.markdown("---")
         st.subheader("Previous Conversation History")
@@ -675,10 +692,6 @@ st.subheader("Ask Talking Rabbitt")
 for turn in st.session_state.history:
     with st.chat_message(turn["role"]):
         st.write(turn["content"])
-        
-        # Regenerate visual dashboard parameters dynamically if structure matches target definitions
-        if turn.get("role") == "assistant" and "💡" in turn["content"] and "history_chart_rendered" not in st.session_state:
-             pass 
 
 typed_question = st.chat_input("Ask about distributions, specific metrics, highs, lows, or projections...")
 question = typed_question or chip_clicked
@@ -722,5 +735,5 @@ if question:
 
     st.session_state.history.append({"role": "assistant", "content": answer, "fig": None})
     
-    # Save the updated conversation instantly to the JSON database
+    # Force state synchronization to JSON database disk
     sync_user_chat_to_disk()
