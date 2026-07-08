@@ -227,14 +227,12 @@ def generate_suggested_questions(client, context: str) -> list:
 # VALIDATION LAYER
 # ----------------------------------------------------------------------------
 def validate(resp: dict, df: pd.DataFrame) -> dict:
-    # If the AI marked it out of scope entirely, reject it early
     if not resp.get("in_scope"):
         resp["answer"] = REFUSAL.format(cols=", ".join(df.columns))
         resp["chart_type"] = "none"
         resp["insight"] = None
         return resp
 
-    # Only enforce strict CSV column validation if the AI actually wants to build a visual plot
     if resp.get("chart_type") != "none":
         VIRTUAL_COLUMNS = {"Derived_Profit", "Derived_Tax", "Derived_Forecast"}
         cols = set(df.columns).union(VIRTUAL_COLUMNS)
@@ -423,7 +421,6 @@ def chat_history_csv(history: list) -> bytes:
 # ----------------------------------------------------------------------------
 # APPLICATION ENTRY CONTROL
 # ----------------------------------------------------------------------------
-# --- Locate this block near the bottom of your app.py and replace it ---
 with st.sidebar:
     st.header("Setup")
     
@@ -448,9 +445,7 @@ with st.sidebar:
     if key_input:
         st.session_state["groq_key"] = key_input
 
-    theme_choice = st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme")
-
-    theme_choice = st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme")
+    theme_choice = st.radio("Theme Layout", ["Light", "Dark"], horizontal=True, key="theme_layout_selection")
     file = st.file_uploader("Upload CSV Data", type=["csv"])
     rag_file = st.file_uploader("Upload Qualitative Context (TXT/MD)", type=["txt", "md"])
     
@@ -461,7 +456,7 @@ with st.sidebar:
     st.markdown("---")
     st.caption(f"Engine: {CHAT_MODEL}")
 
-plotly_template = inject_theme(st.session_state.get("theme", "Light"))
+plotly_template = inject_theme(st.session_state.get("theme_layout_selection", "Light"))
 
 if "history" not in st.session_state:
     st.session_state.history = []
