@@ -1,0 +1,6 @@
+streamlit>=1.38
+pandas>=2.2
+plotly>=5.22
+groq>=0.11
+sentence-transformers>=3.0.0
+numpy>=1.26.0
