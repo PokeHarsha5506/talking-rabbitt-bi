@@ -1,6 +1,6 @@
 """
 Talking Rabbitt - AI Powered Business Intelligence Dashboard
-Single-file Streamlit app with Authentication & Automated Structural Auto-RAG.
+Single-file Streamlit app with JSON-backed persistent Signup/Login & Auto-RAG.
 """
 
 import hashlib
@@ -20,6 +20,7 @@ from sentence_transformers import SentenceTransformer
 # CONFIG
 # ----------------------------------------------------------------------------
 CHAT_MODEL = "openai/gpt-oss-120b"  # fast + strong reasoning on Groq.
+DB_FILE = "users.json"
 
 st.set_page_config(page_title="Talking Rabbitt", page_icon="🐇", layout="wide")
 
@@ -27,12 +28,6 @@ REFUSAL = (
     "I couldn't find anything in the uploaded data or knowledge documents related to that question. "
     "Please ask something about the columns in your file: {cols} or your text references."
 )
-
-# Mock User Credentials for Authentication
-USER_CREDENTIALS = {
-    "admin": "password123",
-    "harsh": "developer2026"
-}
 
 # ----------------------------------------------------------------------------
 # THEME INJECTOR
@@ -78,28 +73,90 @@ def inject_theme(theme: str):
 
 
 # ----------------------------------------------------------------------------
-# AUTHENTICATION LAYER
+# DATABASE LAYER (JSON CREDENTIAL STORAGE)
+# ----------------------------------------------------------------------------
+def load_user_db() -> dict:
+    """Loads existing accounts from local JSON database file."""
+    if not os.path.exists(DB_FILE):
+        # Default seeding profile
+        initial_db = {"admin": hashlib.sha256("password123".encode()).hexdigest()}
+        with open(DB_FILE, "w") as f:
+            json.dump(initial_db, f)
+        return initial_db
+    try:
+        with open(DB_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_user_db(db: dict):
+    """Writes updated user profiles permanently to disk."""
+    with open(DB_FILE, "w") as f:
+        json.dump(db, f, indent=2)
+
+
+def hash_string(text: str) -> str:
+    """Hashes credential configurations securely before writing to database."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+# ----------------------------------------------------------------------------
+# AUTHENTICATION & SIGN UP LAYER
 # ----------------------------------------------------------------------------
 def check_authentication():
-    """Renders a simple login interface and tracks authentication state."""
+    """Renders a toggleable Login / Signup structural system."""
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
 
     if not st.session_state["authenticated"]:
-        st.title("🔒 Talking Rabbitt Secure Login")
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Login")
-            
-            if submit:
-                if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == password:
-                    st.session_state["authenticated"] = True
-                    st.session_state["username"] = username
-                    st.success("Access Granted! Loading application...")
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
+        st.title("🐇 Welcome to Talking Rabbitt")
+        
+        # Segment access paths using tabs
+        auth_mode = st.tabs(["🔒 Account Login", "✨ Create Account"])
+        user_db = load_user_db()
+
+        # ---- LOGIN PATHWAY ----
+        with auth_mode[0]:
+            with st.form("login_form"):
+                username = st.text_input("Username", key="login_user").strip()
+                password = st.text_input("Password", type="password", key="login_pass")
+                submit_login = st.form_submit_button("Sign In")
+                
+                if submit_login:
+                    if not username or not password:
+                        st.error("Fields cannot be blank.")
+                    elif username in user_db and user_db[username] == hash_string(password):
+                        st.session_state["authenticated"] = True
+                        st.session_state["username"] = username
+                        st.success(f"Access Authorized! Booting user environment...")
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or matching security phrase.")
+
+        # ---- SIGN UP PATHWAY ----
+        with auth_mode[1]:
+            with st.form("signup_form"):
+                new_user = st.text_input("Choose Username", key="reg_user").strip()
+                new_pass = st.text_input("Choose Password", type="password", key="reg_pass")
+                confirm_pass = st.text_input("Confirm Password", type="password", key="reg_confirm")
+                submit_signup = st.form_submit_button("Register Securely")
+                
+                if submit_signup:
+                    if len(new_user) < 3:
+                        st.error("Username must be at least 3 characters long.")
+                    elif len(new_pass) < 6:
+                        st.error("Password must be at least 6 characters long for target stability.")
+                    elif new_pass != confirm_pass:
+                        st.error("Password keys do not match.")
+                    elif new_user in user_db:
+                        st.error("Username already exists in index records.")
+                    else:
+                        # Append and save profile to disk
+                        user_db[new_user] = hash_string(new_pass)
+                        save_user_db(user_db)
+                        st.success("Registration complete! You can now switch tabs and log in.")
+                        
         st.stop()
 
 
@@ -108,12 +165,12 @@ def check_authentication():
 # ----------------------------------------------------------------------------
 def generate_auto_rag_text(df: pd.DataFrame) -> list:
     """
-    Analyzes the CSV and transforms structural characteristics, distributions,
-    and row anomalies into standalone qualitative textual descriptions for vector matching.
+    Transforms quantitative tabular structure distributions and anomaly 
+    points dynamically into text descriptions to run semantic retrieval.
     """
     text_chunks = []
     
-    # 1. Process Numeric Highs, Lows, and Outliers
+    # 1. Process Numeric Highs, Lows, and Metrics
     numeric_cols = df.select_dtypes("number").columns.tolist()
     for col in numeric_cols:
         col_min = df[col].min()
@@ -127,7 +184,6 @@ def generate_auto_rag_text(df: pd.DataFrame) -> list:
         )
         text_chunks.append(chunk)
         
-        # Pull high/low record descriptions if an object/identity column is available
         text_cols = df.select_dtypes(include=["object"]).columns.tolist()
         if text_cols:
             id_col = text_cols[0]
@@ -149,7 +205,7 @@ def generate_auto_rag_text(df: pd.DataFrame) -> list:
         summary += f"The most frequent profiles include: {distribution_str}."
         text_chunks.append(summary)
 
-    # 3. Handle Time-series Ranges if dates are present
+    # 3. Handle Time-series Ranges
     for c in df.columns:
         parsed = pd.to_datetime(df[c], errors="coerce")
         if parsed.notna().mean() > 0.8:
@@ -160,7 +216,7 @@ def generate_auto_rag_text(df: pd.DataFrame) -> list:
 
 
 def get_relevant_context(query: str, text_chunks: list, top_k=2) -> str:
-    """Performs lightning-fast serverless cosine similarity matching."""
+    """Performs serverless cosine similarity matching across generated context chunks."""
     if not text_chunks:
         return ""
     
