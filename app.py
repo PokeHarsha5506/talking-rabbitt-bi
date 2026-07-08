@@ -423,11 +423,32 @@ def chat_history_csv(history: list) -> bytes:
 # ----------------------------------------------------------------------------
 # APPLICATION ENTRY CONTROL
 # ----------------------------------------------------------------------------
+# --- Locate this block near the bottom of your app.py and replace it ---
 with st.sidebar:
     st.header("Setup")
-    key_input = st.text_input("Groq API Key", type="password", value=os.environ.get("GROQ_API_KEY", ""))
+    
+    # 1. Check background environment for secure keys
+    env_key = os.environ.get("GROQ_API_KEY") or st.session_state.get("groq_key")
+    
+    # 2. Set a secure placeholder instead of exposing raw text
+    if env_key:
+        placeholder_text = "•••••••••••••••• (Active securely)"
+    else:
+        placeholder_text = "Paste your Groq API Key here..."
+        
+    # 3. Secure password field that always defaults to empty
+    key_input = st.text_input(
+        "Groq API Key", 
+        type="password", 
+        placeholder=placeholder_text,
+        value=""
+    )
+    
+    # 4. Bind the manual token securely to session state if typed
     if key_input:
         st.session_state["groq_key"] = key_input
+
+    theme_choice = st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme")
 
     theme_choice = st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme")
     file = st.file_uploader("Upload CSV Data", type=["csv"])
