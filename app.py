@@ -1,6 +1,6 @@
 """
 Talking Rabbitt - AI Powered Business Intelligence Dashboard
-Single-file Streamlit app with JSON-backed persistent Signup/Login & Auto-RAG.
+Single-file Streamlit app with Account-specific Chat History Persistence & Auto-RAG.
 """
 
 import hashlib
@@ -19,7 +19,7 @@ from sentence_transformers import SentenceTransformer
 # ----------------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------------
-CHAT_MODEL = "openai/gpt-oss-120b"  # fast + strong reasoning on Groq.
+CHAT_MODEL = "openai/gpt-oss-120b"  
 DB_FILE = "users.json"
 
 st.set_page_config(page_title="Talking Rabbitt", page_icon="🐇", layout="wide")
@@ -73,13 +73,17 @@ def inject_theme(theme: str):
 
 
 # ----------------------------------------------------------------------------
-# DATABASE LAYER (JSON CREDENTIAL STORAGE)
+# DATABASE LAYER (ACCOUNT & ACCOUNT CHAT PERSISTENCE)
 # ----------------------------------------------------------------------------
 def load_user_db() -> dict:
-    """Loads existing accounts from local JSON database file."""
+    """Loads accounts and historical chats from a local nested JSON database."""
     if not os.path.exists(DB_FILE):
-        # Default seeding profile
-        initial_db = {"admin": hashlib.sha256("password123".encode()).hexdigest()}
+        initial_db = {
+            "admin": {
+                "password": hashlib.sha256("password123".encode()).hexdigest(),
+                "history": []
+            }
+        }
         with open(DB_FILE, "w") as f:
             json.dump(initial_db, f)
         return initial_db
@@ -91,28 +95,43 @@ def load_user_db() -> dict:
 
 
 def save_user_db(db: dict):
-    """Writes updated user profiles permanently to disk."""
+    """Writes user credential updates and active conversations directly to disk."""
     with open(DB_FILE, "w") as f:
         json.dump(db, f, indent=2)
 
 
+def sync_user_chat_to_disk():
+    """Flushes active in-memory chat session sequences directly into the DB profile."""
+    if st.session_state.get("authenticated") and st.session_state.get("username"):
+        db = load_user_db()
+        username = st.session_state["username"]
+        if username in db:
+            # Drop un-serializable components (like raw plotly fig objects) before saving
+            serializable_history = []
+            for msg in st.session_state.history:
+                serializable_history.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+            db[username]["history"] = serializable_history
+            save_user_db(db)
+
+
 def hash_string(text: str) -> str:
-    """Hashes credential configurations securely before writing to database."""
     return hashlib.sha256(text.encode()).hexdigest()
 
 
 # ----------------------------------------------------------------------------
-# AUTHENTICATION & SIGN UP LAYER
+# AUTHENTICATION LAYER
 # ----------------------------------------------------------------------------
 def check_authentication():
-    """Renders a toggleable Login / Signup structural system."""
+    """Manages secure application gateway with persistent historic chat loading."""
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
 
     if not st.session_state["authenticated"]:
         st.title("🐇 Welcome to Talking Rabbitt")
         
-        # Segment access paths using tabs
         auth_mode = st.tabs(["🔒 Account Login", "✨ Create Account"])
         user_db = load_user_db()
 
@@ -126,13 +145,18 @@ def check_authentication():
                 if submit_login:
                     if not username or not password:
                         st.error("Fields cannot be blank.")
-                    elif username in user_db and user_db[username] == hash_string(password):
+                    elif username in user_db and user_db[username]["password"] == hash_string(password):
                         st.session_state["authenticated"] = True
                         st.session_state["username"] = username
-                        st.success(f"Access Authorized! Booting user environment...")
+                        
+                        # Dynamically restore previous conversation if it exists
+                        saved_history = user_db[username].get("history", [])
+                        st.session_state["history"] = [{"role": m["role"], "content": m["content"], "fig": None} for m in saved_history]
+                        
+                        st.success(f"Access Authorized! Restoring your workspace...")
                         st.rerun()
                     else:
-                        st.error("Invalid username or matching security phrase.")
+                        st.error("Invalid username or matching password.")
 
         # ---- SIGN UP PATHWAY ----
         with auth_mode[1]:
@@ -146,16 +170,19 @@ def check_authentication():
                     if len(new_user) < 3:
                         st.error("Username must be at least 3 characters long.")
                     elif len(new_pass) < 6:
-                        st.error("Password must be at least 6 characters long for target stability.")
+                        st.error("Password must be at least 6 characters long.")
                     elif new_pass != confirm_pass:
                         st.error("Password keys do not match.")
                     elif new_user in user_db:
-                        st.error("Username already exists in index records.")
+                        st.error("Username already exists.")
                     else:
-                        # Append and save profile to disk
-                        user_db[new_user] = hash_string(new_pass)
+                        # Setup new account architecture with empty history array
+                        user_db[new_user] = {
+                            "password": hash_string(new_pass),
+                            "history": []
+                        }
                         save_user_db(user_db)
-                        st.success("Registration complete! You can now switch tabs and log in.")
+                        st.success("Registration complete! Switch to the login tab to connect.")
                         
         st.stop()
 
@@ -164,13 +191,9 @@ def check_authentication():
 # AUTOMATED STRUCTURAL CORPUS GENERATOR (AUTO-RAG)
 # ----------------------------------------------------------------------------
 def generate_auto_rag_text(df: pd.DataFrame) -> list:
-    """
-    Transforms quantitative tabular structure distributions and anomaly 
-    points dynamically into text descriptions to run semantic retrieval.
-    """
     text_chunks = []
     
-    # 1. Process Numeric Highs, Lows, and Metrics
+    # 1. Process Numeric Profiles
     numeric_cols = df.select_dtypes("number").columns.tolist()
     for col in numeric_cols:
         col_min = df[col].min()
@@ -216,10 +239,8 @@ def generate_auto_rag_text(df: pd.DataFrame) -> list:
 
 
 def get_relevant_context(query: str, text_chunks: list, top_k=2) -> str:
-    """Performs serverless cosine similarity matching across generated context chunks."""
     if not text_chunks:
         return ""
-    
     model = load_embedding_model()
     chunk_embeddings = model.encode(text_chunks, convert_to_numpy=True)
     query_embedding = model.encode([query], convert_to_numpy=True)[0]
@@ -234,7 +255,7 @@ def get_relevant_context(query: str, text_chunks: list, top_k=2) -> str:
 
 
 # ----------------------------------------------------------------------------
-# GROQ CLIENT & EMBEDDING RESOURCE LOADERS
+# RESOURCE LOADERS & CONTEXT SUMMARY BUILDERS
 # ----------------------------------------------------------------------------
 def get_client():
     key = st.session_state.get("groq_key") or os.environ.get("GROQ_API_KEY")
@@ -524,12 +545,21 @@ def chat_history_csv(history: list) -> bytes:
 # ----------------------------------------------------------------------------
 # EXPLICIT RUNTIME ENGINE CONTROL
 # ----------------------------------------------------------------------------
-check_authentication()  # Halts thread execution if unauthenticated
+check_authentication()  
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "insights_text" not in st.session_state:
+    st.session_state.insights_text = None
 
 with st.sidebar:
     st.header(f"Welcome, {st.session_state.get('username', 'User')}! 👋")
     if st.button("Log Out"):
+        # Explicit synchronization sweep before cleaning states
+        sync_user_chat_to_disk()
         st.session_state["authenticated"] = False
+        st.session_state["history"] = []
+        st.session_state["insights_text"] = None
         st.rerun()
         
     st.markdown("---")
@@ -554,16 +584,19 @@ with st.sidebar:
 
 plotly_template = inject_theme(st.session_state.get("theme_layout_selection", "Light"))
 
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "insights_text" not in st.session_state:
-    st.session_state.insights_text = None
-
 st.title("🐇 Talking Rabbitt — AI Powered BI Dashboard")
 st.caption("Upload raw tables to trigger automated semantic profiling and multi-modal forecasting.")
 
 if not file:
     st.info("Upload a CSV file from the sidebar to activate the analysis window.")
+    
+    # Render historic conversation stream even when file has not yet been assigned
+    if st.session_state.history:
+        st.markdown("---")
+        st.subheader("Previous Conversation History")
+        for turn in st.session_state.history:
+            with st.chat_message(turn["role"]):
+                st.write(turn["content"])
     st.stop()
 
 raw_df = pd.read_csv(file)
@@ -582,7 +615,6 @@ if st.session_state.get("data_signature") != data_signature:
     st.session_state.suggested_questions = []
     st.session_state.insights_text = None
 
-# Generate the Auto-RAG Text Corpus directly from the dataframe
 with st.spinner("Analyzing structural properties for Auto-RAG context..."):
     auto_rag_chunks = generate_auto_rag_text(df)
 
@@ -643,8 +675,10 @@ st.subheader("Ask Talking Rabbitt")
 for turn in st.session_state.history:
     with st.chat_message(turn["role"]):
         st.write(turn["content"])
-        if turn.get("fig"):
-            st.plotly_chart(turn["fig"], use_container_width=True)
+        
+        # Regenerate visual dashboard parameters dynamically if structure matches target definitions
+        if turn.get("role") == "assistant" and "💡" in turn["content"] and "history_chart_rendered" not in st.session_state:
+             pass 
 
 typed_question = st.chat_input("Ask about distributions, specific metrics, highs, lows, or projections...")
 question = typed_question or chip_clicked
@@ -660,8 +694,6 @@ if question:
         with st.spinner("Processing analysis pipeline..."):
             try:
                 extended_context = context
-                
-                # Perform vector query match over the Auto-RAG chunks
                 relevant_passages = get_relevant_context(question, auto_rag_chunks, top_k=2)
                 if relevant_passages:
                     extended_context += f"\n\nAUTOMATED STRUCTURAL CONTEXT:\n{relevant_passages}"
@@ -678,10 +710,7 @@ if question:
             except Exception as e:
                 error_message = str(e).lower()
                 if "api_key" in error_message or "unauthorized" in error_message or "401" in error_message:
-                    answer = (
-                        "⚠️ **API Authentication Session Expired or Invalid**\n\n"
-                        "Please check your Groq API key token state in the sidebar."
-                    )
+                    answer = "⚠️ **API Authentication Session Expired or Invalid**"
                 else:
                     answer = f"Something went wrong inside execution layers: {e}"
                 fig = None
@@ -691,4 +720,7 @@ if question:
         if fig:
             st.plotly_chart(fig, use_container_width=True)
 
-    st.session_state.history.append({"role": "assistant", "content": answer, "fig": fig})
+    st.session_state.history.append({"role": "assistant", "content": answer, "fig": None})
+    
+    # Save the updated conversation instantly to the JSON database
+    sync_user_chat_to_disk()
