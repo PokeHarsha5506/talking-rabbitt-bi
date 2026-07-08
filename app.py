@@ -1,6 +1,6 @@
 """
 Talking Rabbitt - AI Powered Business Intelligence Dashboard
-Single-file Streamlit app with Hybrid Structured Analysis & Semantic RAG Text Matching.
+Single-file Streamlit app with Authentication & Automated Structural Auto-RAG.
 """
 
 import hashlib
@@ -27,6 +27,12 @@ REFUSAL = (
     "I couldn't find anything in the uploaded data or knowledge documents related to that question. "
     "Please ask something about the columns in your file: {cols} or your text references."
 )
+
+# Mock User Credentials for Authentication
+USER_CREDENTIALS = {
+    "admin": "password123",
+    "harsh": "developer2026"
+}
 
 # ----------------------------------------------------------------------------
 # THEME INJECTOR
@@ -72,33 +78,85 @@ def inject_theme(theme: str):
 
 
 # ----------------------------------------------------------------------------
-# GROQ CLIENT & EMBEDDING RESOURCE LOADERS
+# AUTHENTICATION LAYER
 # ----------------------------------------------------------------------------
-def get_client():
-    key = st.session_state.get("groq_key") or os.environ.get("GROQ_API_KEY")
-    if not key:
-        return None
-    return Groq(api_key=key)
+def check_authentication():
+    """Renders a simple login interface and tracks authentication state."""
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
 
-
-@st.cache_resource
-def load_embedding_model():
-    """Loads and caches a compact, high-speed open-source semantic embedding model."""
-    return SentenceTransformer("all-MiniLM-L6-v2")
+    if not st.session_state["authenticated"]:
+        st.title("🔒 Talking Rabbitt Secure Login")
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Login")
+            
+            if submit:
+                if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == password:
+                    st.session_state["authenticated"] = True
+                    st.session_state["username"] = username
+                    st.success("Access Granted! Loading application...")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+        st.stop()
 
 
 # ----------------------------------------------------------------------------
-# RAG ENGINE EXTRACTION & ALIGNMENT PIPELINE
+# AUTOMATED STRUCTURAL CORPUS GENERATOR (AUTO-RAG)
 # ----------------------------------------------------------------------------
-def process_rag_text(raw_text: str, chunk_size=500, overlap=100) -> list:
-    """Splits uploaded raw textual materials into smaller overlapping context vectors."""
-    chunks = []
-    start = 0
-    while start < len(raw_text):
-        end = start + chunk_size
-        chunks.append(raw_text[start:end].strip())
-        start += (chunk_size - overlap)
-    return chunks
+def generate_auto_rag_text(df: pd.DataFrame) -> list:
+    """
+    Analyzes the CSV and transforms structural characteristics, distributions,
+    and row anomalies into standalone qualitative textual descriptions for vector matching.
+    """
+    text_chunks = []
+    
+    # 1. Process Numeric Highs, Lows, and Outliers
+    numeric_cols = df.select_dtypes("number").columns.tolist()
+    for col in numeric_cols:
+        col_min = df[col].min()
+        col_max = df[col].max()
+        col_mean = df[col].mean()
+        
+        chunk = (
+            f"Regarding the column '{col}': The values range from a minimum of {col_min:.2f} "
+            f"to a maximum of {col_max:.2f}. The overall average value observed across the entire "
+            f"dataset is {col_mean:.2f}."
+        )
+        text_chunks.append(chunk)
+        
+        # Pull high/low record descriptions if an object/identity column is available
+        text_cols = df.select_dtypes(include=["object"]).columns.tolist()
+        if text_cols:
+            id_col = text_cols[0]
+            max_idx = df[col].idxmax()
+            min_idx = df[col].idxmin()
+            if pd.notna(max_idx) and pd.notna(min_idx):
+                text_chunks.append(f"The highest value for '{col}' is {df.loc[max_idx, col]}, found in row associated with {id_col} '{df.loc[max_idx, id_col]}'.")
+                text_chunks.append(f"The lowest value for '{col}' is {df.loc[min_idx, col]}, found in row associated with {id_col} '{df.loc[min_idx, id_col]}'.")
+
+    # 2. Process Categorical Distribution Overviews
+    cat_cols = [c for c in df.columns if c not in numeric_cols]
+    for col in cat_cols:
+        value_counts = df[col].value_counts()
+        total_unique = len(value_counts)
+        top_values = value_counts.head(5).to_dict()
+        
+        summary = f"The categorical column '{col}' contains {total_unique} distinct classifications. "
+        distribution_str = ", ".join([f"'{k}' appearing {v} times" for k, v in top_values.items()])
+        summary += f"The most frequent profiles include: {distribution_str}."
+        text_chunks.append(summary)
+
+    # 3. Handle Time-series Ranges if dates are present
+    for c in df.columns:
+        parsed = pd.to_datetime(df[c], errors="coerce")
+        if parsed.notna().mean() > 0.8:
+            text_chunks.append(f"The historical operations and timeline records span from a starting timeline of {parsed.min().strftime('%Y-%m-%d')} up to an ending period of {parsed.max().strftime('%Y-%m-%d')}.")
+            break
+
+    return text_chunks
 
 
 def get_relevant_context(query: str, text_chunks: list, top_k=2) -> str:
@@ -110,19 +168,30 @@ def get_relevant_context(query: str, text_chunks: list, top_k=2) -> str:
     chunk_embeddings = model.encode(text_chunks, convert_to_numpy=True)
     query_embedding = model.encode([query], convert_to_numpy=True)[0]
     
-    # Mathematical dot product vector alignments
     scores = np.dot(chunk_embeddings, query_embedding) / (
         np.linalg.norm(chunk_embeddings, axis=1) * np.linalg.norm(query_embedding)
     )
     
     top_indices = np.argsort(scores)[::-1][:top_k]
-    relevant_passages = [text_chunks[idx] for idx in top_indices if scores[idx] > 0.25]
+    relevant_passages = [text_chunks[idx] for idx in top_indices if scores[idx] > 0.20]
     return "\n---\n".join(relevant_passages)
 
 
 # ----------------------------------------------------------------------------
-# DATA TABULAR CONTEXT BUILDER
+# GROQ CLIENT & EMBEDDING RESOURCE LOADERS
 # ----------------------------------------------------------------------------
+def get_client():
+    key = st.session_state.get("groq_key") or os.environ.get("GROQ_API_KEY")
+    if not key:
+        return None
+    return Groq(api_key=key)
+
+
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+
 def build_context(df: pd.DataFrame) -> str:
     numeric_cols = df.select_dtypes("number").columns.tolist()
     cat_cols = [c for c in df.columns if c not in numeric_cols]
@@ -145,7 +214,7 @@ def build_context(df: pd.DataFrame) -> str:
     
     tax_rate = st.session_state.get("var_tax_rate", 25)
     growth_rate = st.session_state.get("var_growth_rate", 12)
-    lines.append(f"\nGLOBAL MODEL PARAMETERS (Use for financial projections if requested):")
+    lines.append(f"\nGLOBAL MODEL PARAMETERS:")
     lines.append(f"- Baseline Corporate Tax Rate: {tax_rate}%")
     lines.append(f"- User Forecast Target Growth Rate: {growth_rate}%")
     
@@ -159,16 +228,15 @@ FINANCIAL DERIVATION RULES:
 - If columns representing revenue/sales/income and cost/expenses/spend are present, you CAN compute:
   * Profit/Loss = Revenue - Cost (Mapped to the virtual column: 'Derived_Profit')
   * Tax Deduction = Profit * Tax Rate (Mapped to the virtual column: 'Derived_Tax')
-- Never invent base numbers out of nowhere, but you are explicitly encouraged to mathematically derive these values.
 
 FUTURE FORECASTING & UNSTRUCTURED TEXT COUPLING RULES:
 - If asked to predict or forecast trajectories, analyze historical data paths or draw contextual answers directly from the qualitative context snippets.
-- Set `chart_type` to 'line' or 'bar' and map the target metric to 'Derived_Forecast' to visualize trends. If the inquiry is purely text-based and doesn't require a plot, return `chart_type` as 'none'.
+- Set `chart_type` to 'line' or 'bar' and map the target metric to 'Derived_Forecast' to visualize trends. If the inquiry is purely text-based, return `chart_type` as 'none'.
 
 DATASET CONTEXT:
 {context}
 
-Respond to the user's question with ONLY a single JSON object (no markdown, no prose outside the JSON) matching this schema:
+Respond to the user's question with ONLY a single JSON object matching this schema:
 {{
   "in_scope": true or false,
   "answer": "conversational answer containing computations, text match clarifications, or predictions, 2-4 sentences",
@@ -180,12 +248,7 @@ Respond to the user's question with ONLY a single JSON object (no markdown, no p
   "agg": "sum" | "mean" | "count",
   "insight": "one short actionable business recommendation or data realization based on your calculations/notes, or null"
 }}
-
-Rules for Qualitative/RAG questions:
-- If the question is answered by the qualitative document context and does NOT require drawing a chart, set "chart_type" to "none", set "x": null, "y": null, and set "in_scope": true.
-- Only reference column names that literally appear in the dataset context, or the specified virtual columns ('Derived_Profit', 'Derived_Tax', 'Derived_Forecast').
 """
-
 
 def call_groq(client, context: str, question: str, history: list):
     messages = [{"role": "system", "content": SYSTEM_TEMPLATE.format(context=context)}]
@@ -223,9 +286,6 @@ def generate_suggested_questions(client, context: str) -> list:
         return []
 
 
-# ----------------------------------------------------------------------------
-# VALIDATION LAYER
-# ----------------------------------------------------------------------------
 def validate(resp: dict, df: pd.DataFrame) -> dict:
     if not resp.get("in_scope"):
         resp["answer"] = REFUSAL.format(cols=", ".join(df.columns))
@@ -247,9 +307,6 @@ def validate(resp: dict, df: pd.DataFrame) -> dict:
     return resp
 
 
-# ----------------------------------------------------------------------------
-# DETERMINISTIC CALCULATION & PLOT ENGINE
-# ----------------------------------------------------------------------------
 def make_chart(resp: dict, df: pd.DataFrame, template: str):
     ct, x, y, val, color, agg = (
         resp.get("chart_type"), resp.get("x"), resp.get("y"),
@@ -297,7 +354,6 @@ def make_chart(resp: dict, df: pd.DataFrame, template: str):
             if x and y:
                 d = working_df[[x, y]].dropna().sort_values(x)
                 try:
-                    import statsmodels
                     fig = px.line(d, x=x, y=y, title=f"{y.replace('Derived_', '')} Outlook over {x}")
                     trend_fig = px.scatter(d, x=x, y=y, trendline="ols")
                     trend_line = trend_fig.data[1]
@@ -342,9 +398,6 @@ def make_chart(resp: dict, df: pd.DataFrame, template: str):
         return None
 
 
-# ----------------------------------------------------------------------------
-# AUTO STRATEGY GENERATOR
-# ----------------------------------------------------------------------------
 def auto_insights(client, df: pd.DataFrame, context: str) -> str:
     prompt = (
         "Based on the data context and configuration parameters, provide: "
@@ -360,9 +413,6 @@ def auto_insights(client, df: pd.DataFrame, context: str) -> str:
     return resp.choices[0].message.content
 
 
-# ----------------------------------------------------------------------------
-# DYNAMIC FRONTEND SLIDER FILTERS
-# ----------------------------------------------------------------------------
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     filtered = df.copy()
     with st.sidebar.expander("🔎 Filters", expanded=False):
@@ -410,44 +460,34 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     return filtered
 
 
-# ----------------------------------------------------------------------------
-# EXPORT HELPERS
-# ----------------------------------------------------------------------------
 def chat_history_csv(history: list) -> bytes:
     rows = [{"role": t["role"], "message": t["content"]} for t in history]
     return pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
 
 
 # ----------------------------------------------------------------------------
-# APPLICATION ENTRY CONTROL
+# EXPLICIT RUNTIME ENGINE CONTROL
 # ----------------------------------------------------------------------------
+check_authentication()  # Halts thread execution if unauthenticated
+
 with st.sidebar:
+    st.header(f"Welcome, {st.session_state.get('username', 'User')}! 👋")
+    if st.button("Log Out"):
+        st.session_state["authenticated"] = False
+        st.rerun()
+        
+    st.markdown("---")
     st.header("Setup")
     
-    # 1. Check background environment for secure keys
     env_key = os.environ.get("GROQ_API_KEY") or st.session_state.get("groq_key")
-    
-    # 2. Set a secure placeholder instead of exposing raw text
-    if env_key:
-        placeholder_text = "•••••••••••••••• (Active securely)"
-    else:
-        placeholder_text = "Paste your Groq API Key here..."
+    placeholder_text = "•••••••••••••••• (Active securely)" if env_key else "Paste your Groq API Key here..."
         
-    # 3. Secure password field that always defaults to empty
-    key_input = st.text_input(
-        "Groq API Key", 
-        type="password", 
-        placeholder=placeholder_text,
-        value=""
-    )
-    
-    # 4. Bind the manual token securely to session state if typed
+    key_input = st.text_input("Groq API Key", type="password", placeholder=placeholder_text, value="")
     if key_input:
         st.session_state["groq_key"] = key_input
 
     theme_choice = st.radio("Theme Layout", ["Light", "Dark"], horizontal=True, key="theme_layout_selection")
     file = st.file_uploader("Upload CSV Data", type=["csv"])
-    rag_file = st.file_uploader("Upload Qualitative Context (TXT/MD)", type=["txt", "md"])
     
     st.markdown("---")
     st.header("🔮 Simulation Models")
@@ -464,7 +504,7 @@ if "insights_text" not in st.session_state:
     st.session_state.insights_text = None
 
 st.title("🐇 Talking Rabbitt — AI Powered BI Dashboard")
-st.caption("Upload raw tables and reference docs, then execute multi-modal simulation forecasts.")
+st.caption("Upload raw tables to trigger automated semantic profiling and multi-modal forecasting.")
 
 if not file:
     st.info("Upload a CSV file from the sidebar to activate the analysis window.")
@@ -486,6 +526,10 @@ if st.session_state.get("data_signature") != data_signature:
     st.session_state.suggested_questions = []
     st.session_state.insights_text = None
 
+# Generate the Auto-RAG Text Corpus directly from the dataframe
+with st.spinner("Analyzing structural properties for Auto-RAG context..."):
+    auto_rag_chunks = generate_auto_rag_text(df)
+
 # --- KPI Section ------------------------------------------------------------
 numeric_cols = df.select_dtypes("number").columns.tolist()
 st.subheader("Overview")
@@ -499,8 +543,7 @@ for i, c in enumerate(numeric_cols[:3]):
 with st.expander("Preview data grid"):
     st.dataframe(df.head(20), use_container_width=True)
 
-if rag_file:
-    st.success(f"📖 Reference Context Loaded: '{rag_file.name}' is actively paired for matching.")
+st.success(f"📖 Auto-RAG Activated: Generated {len(auto_rag_chunks)} data-insight profiles from your file structure.")
 
 # --- Action Hub -------------------------------------------------------------
 st.subheader("AI Insights & Projections")
@@ -547,7 +590,7 @@ for turn in st.session_state.history:
         if turn.get("fig"):
             st.plotly_chart(turn["fig"], use_container_width=True)
 
-typed_question = st.chat_input("Ask anything about numbers, margins, or uploaded reference files...")
+typed_question = st.chat_input("Ask about distributions, specific metrics, highs, lows, or projections...")
 question = typed_question or chip_clicked
 
 if question:
@@ -560,16 +603,13 @@ if question:
     else:
         with st.spinner("Processing analysis pipeline..."):
             try:
-                # 1. Qualitative RAG Extraction Layer Pass
                 extended_context = context
-                if rag_file:
-                    raw_text = rag_file.getvalue().decode("utf-8")
-                    chunks = process_rag_text(raw_text)
-                    relevant_passages = get_relevant_context(question, chunks, top_k=2)
-                    if relevant_passages:
-                        extended_context += f"\n\nRELEVANT QUALITATIVE DOC CONTEXT:\n{relevant_passages}"
+                
+                # Perform vector query match over the Auto-RAG chunks
+                relevant_passages = get_relevant_context(question, auto_rag_chunks, top_k=2)
+                if relevant_passages:
+                    extended_context += f"\n\nAUTOMATED STRUCTURAL CONTEXT:\n{relevant_passages}"
 
-                # 2. Complete Prompt Synthesis Execution Call
                 raw = call_groq(
                     client, extended_context, question,
                     [{"role": t["role"], "content": t["content"]} for t in st.session_state.history[:-1]],
@@ -584,9 +624,7 @@ if question:
                 if "api_key" in error_message or "unauthorized" in error_message or "401" in error_message:
                     answer = (
                         "⚠️ **API Authentication Session Expired or Invalid**\n\n"
-                        "Your underlying data modeling state, filters, and chat history have been successfully "
-                        "preserved in-memory. Please update your token credential in the sidebar panel to "
-                        "automatically resume this analytical sequence exactly where you left off."
+                        "Please check your Groq API key token state in the sidebar."
                     )
                 else:
                     answer = f"Something went wrong inside execution layers: {e}"
